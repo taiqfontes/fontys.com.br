@@ -89,10 +89,11 @@ function page(diagnosticos, mapas) {
     return '' +
     '<tr class="data-row"><td>' + esc(fmtDate(m.created_at)) + '</td>' +
     '<td><b>' + (esc(m.nome) || '-') + '</b></td>' +
+    '<td>' + (esc(m.dados && m.dados.nascimento) || '-') + '</td>' +
     '<td>' + (esc(maskCpf(m.cpf)) || '-') + '</td>' +
     '<td>' + (esc(m.cidade) || '-') + '</td>' +
     '<td><button class="btn-ver" onclick="toggle(\'m-' + m.id + '\')">Ver detalhes</button> <a class="btn-docx" href="/api/admin-export?type=mapa&id=' + m.id + '">Baixar DOCX</a> <button class="btn-del" data-type="mapa" data-id="' + m.id + '">Apagar</button></td></tr>' +
-    '<tr class="detail-row" id="m-' + m.id + '" style="display:none"><td colspan="5">' + renderObject(m.dados) + '</td></tr>';
+    '<tr class="detail-row" id="m-' + m.id + '" style="display:none"><td colspan="6">' + renderObject(m.dados) + '</td></tr>';
   }).join('');
 
   return '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">' +
@@ -149,7 +150,7 @@ function page(diagnosticos, mapas) {
   diagRows + '</tbody></table></div>' +
   '<div class="panel" id="panelMapa">' +
   '<input class="search" id="searchMapa" placeholder="Buscar por nome..." oninput="filterTable(\'tableMapa\',this.value)">' +
-  '<table id="tableMapa"><thead><tr><th>Data</th><th>Nome</th><th>CPF</th><th>Cidade</th><th></th></tr></thead><tbody>' +
+  '<table id="tableMapa"><thead><tr><th>Data</th><th>Nome</th><th>Nascimento</th><th>CPF</th><th>Cidade</th><th></th></tr></thead><tbody>' +
   mapaRows + '</tbody></table></div>' +
   '</div>' +
   '<script>' +
