@@ -3862,11 +3862,21 @@ function toEventoRow(p) {
   return row;
 }
 
+/* ---- notificacoes: schema real não tem remetente_id, corpo nem
+   evento_convidado_id — só colaborador_id, titulo, mensagem e link. Pra não
+   perder o vínculo "essa notificação é sobre qual convite de evento", a
+   gente usa a coluna link (texto livre) codificando "convite:<id>". */
+function linkConvite(eventoConvidadoId) {
+  return eventoConvidadoId ? `convite:${eventoConvidadoId}` : null;
+}
+function eventoConvidadoIdDoLink(link) {
+  return link && link.startsWith("convite:") ? link.slice("convite:".length) : null;
+}
 function mapNotificacao(row) {
   return {
-    id: row.id, destinatarioId: row.destinatario_id, remetenteId: row.remetente_id || null,
-    tipo: row.tipo, titulo: row.titulo, corpo: row.corpo || "",
-    eventoConvidadoId: row.evento_convidado_id || null,
+    id: row.id, destinatarioId: row.colaborador_id, remetenteId: null,
+    tipo: row.tipo, titulo: row.titulo, corpo: row.mensagem || "",
+    eventoConvidadoId: eventoConvidadoIdDoLink(row.link),
     lida: !!row.lida, criadoEm: row.criado_em,
   };
 }
@@ -4128,8 +4138,7 @@ const MockAPI = {
     if (error) { console.error("convidarParaEvento:", error); return null; }
     if (!convite) return null; // já existia (ignoreDuplicates) — não notifica de novo
     const { error: errNotif } = await supabase.from("notificacoes").insert({
-      destinatario_id: colaboradorId, remetente_id: remetenteId || null, tipo: "convite_evento",
-      titulo, corpo, evento_convidado_id: convite.id,
+      colaborador_id: colaboradorId, tipo: "convite_evento", titulo, mensagem: corpo, link: linkConvite(convite.id),
     });
     if (errNotif) console.error("convidarParaEvento (notificação):", errNotif);
     return mapEventoConvidado(convite);
@@ -4160,7 +4169,7 @@ const MockAPI = {
     }
     const { data, error } = await supabase
       .from("notificacoes").select("*")
-      .eq("destinatario_id", destinatarioId).eq("lida", false)
+      .eq("colaborador_id", destinatarioId).eq("lida", false)
       .order("criado_em", { ascending: false });
     if (error) { console.error("getNotificacoesPendentes:", error); return []; }
     return data.map(mapNotificacao);
