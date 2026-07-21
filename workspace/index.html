@@ -3899,20 +3899,20 @@ function mapAgendaPublicaConfig(row) {
   if (!row) return null;
   return {
     id: row.id, colaboradorId: row.colaborador_id, ativo: !!row.ativo, slug: row.slug || null,
-    tituloPagina: row.titulo_pagina || "", duracaoSlotMin: row.duracao_slot_min ?? 60,
+    tituloPagina: row.titulo || "", duracaoSlotMin: row.duracao_minutos ?? 60,
     antecedenciaMinimaHoras: row.antecedencia_minima_horas ?? 2, diasFuturos: row.dias_futuros ?? 30,
-    intervaloMin: row.intervalo_min ?? 0,
+    intervaloMin: row.intervalo_minutos ?? 0,
   };
 }
 function toAgendaPublicaConfigRow(p) {
   const row = {};
   if (p.ativo !== undefined) row.ativo = p.ativo;
   if (p.slug !== undefined) row.slug = p.slug;
-  if (p.tituloPagina !== undefined) row.titulo_pagina = p.tituloPagina;
-  if (p.duracaoSlotMin !== undefined) row.duracao_slot_min = p.duracaoSlotMin;
+  if (p.tituloPagina !== undefined) row.titulo = p.tituloPagina;
+  if (p.duracaoSlotMin !== undefined) row.duracao_minutos = p.duracaoSlotMin;
   if (p.antecedenciaMinimaHoras !== undefined) row.antecedencia_minima_horas = p.antecedenciaMinimaHoras;
   if (p.diasFuturos !== undefined) row.dias_futuros = p.diasFuturos;
-  if (p.intervaloMin !== undefined) row.intervalo_min = p.intervaloMin;
+  if (p.intervaloMin !== undefined) row.intervalo_minutos = p.intervaloMin;
   return row;
 }
 /* ---- disponibilidade_regra / disponibilidade_excecao / agendamento_publico não têm
@@ -4035,6 +4035,23 @@ async function resolverAgendaPublicaConfigId(supabase, colaboradorId, { somenteA
   if (somenteAtiva) query = query.eq("ativo", true);
   const { data, error } = await query.maybeSingle();
   if (error) { console.error("resolverAgendaPublicaConfigId:", error); return null; }
+  return data?.id || null;
+}
+
+/**
+ * Igual ao helper acima, mas cria a config com valores padrão se ainda não
+ * existir — usado nas ações do próprio colaborador (adicionar horário/exceção)
+ * pra não obrigar a pessoa a clicar em "Salvar configurações" antes de poder
+ * montar a lista de horários (ela pode perfeitamente fazer isso na primeira
+ * vez, direto pelo "+", sem ter salvo nada ainda).
+ */
+async function garantirAgendaPublicaConfigId(supabase, colaboradorId, slugFallback) {
+  const existenteId = await resolverAgendaPublicaConfigId(supabase, colaboradorId);
+  if (existenteId) return existenteId;
+  const { data, error } = await supabase.from("agenda_publica_config")
+    .upsert({ colaborador_id: colaboradorId, slug: slugFallback, ativo: false, duracao_minutos: 60, antecedencia_minima_horas: 2, dias_futuros: 30, intervalo_minutos: 0 }, { onConflict: "colaborador_id" })
+    .select("id").single();
+  if (error) { console.error("garantirAgendaPublicaConfigId:", error); return null; }
   return data?.id || null;
 }
 
@@ -4254,7 +4271,7 @@ const MockAPI = {
     return data.map(mapDisponibilidadeRegra);
   },
 
-  async addDisponibilidadeRegra({ colaboradorId, diaSemana, horaInicio, horaFim }) {
+  async addDisponibilidadeRegra({ colaboradorId, diaSemana, horaInicio, horaFim, slugFallback }) {
     const supabase = getSupabaseClient();
     if (!supabase) {
       await delay(80);
@@ -4262,8 +4279,8 @@ const MockAPI = {
       disponibilidadeRegras = [...disponibilidadeRegras, nova];
       return nova;
     }
-    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId);
-    if (!configId) throw new Error("Salve as configurações da agenda pública antes de adicionar horários.");
+    const configId = await garantirAgendaPublicaConfigId(supabase, colaboradorId, slugFallback);
+    if (!configId) throw new Error("Não foi possível preparar a configuração da agenda pública.");
     const { data, error } = await supabase.from("disponibilidade_regra")
       .insert({ config_id: configId, dia_semana: diaSemana, hora_inicio: horaInicio, hora_fim: horaFim })
       .select().single();
@@ -4295,7 +4312,7 @@ const MockAPI = {
     return data.map(mapDisponibilidadeExcecao);
   },
 
-  async addDisponibilidadeExcecao({ colaboradorId, data, horaInicio, horaFim, tipo }) {
+  async addDisponibilidadeExcecao({ colaboradorId, data, horaInicio, horaFim, tipo, slugFallback }) {
     const supabase = getSupabaseClient();
     if (!supabase) {
       await delay(80);
@@ -4303,8 +4320,8 @@ const MockAPI = {
       disponibilidadeExcecoes = [...disponibilidadeExcecoes, nova];
       return nova;
     }
-    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId);
-    if (!configId) throw new Error("Salve as configurações da agenda pública antes de adicionar exceções.");
+    const configId = await garantirAgendaPublicaConfigId(supabase, colaboradorId, slugFallback);
+    if (!configId) throw new Error("Não foi possível preparar a configuração da agenda pública.");
     const { data: row, error } = await supabase.from("disponibilidade_excecao")
       .insert({ config_id: configId, data, hora_inicio: horaInicio, hora_fim: horaFim, tipo })
       .select().single();
@@ -7978,17 +7995,21 @@ async function openMeusHorariosModal() {
       const horaFim = document.getElementById("mh-novo-fim").value;
       if (!horaInicio || !horaFim || horaFim <= horaInicio) { showToast("Verifique o intervalo de horário.", "erro"); return; }
 
-      if (modoRecorrente) {
-        const diaSemana = Number(document.getElementById("mh-nova-dia").value);
-        await MockAPI.addDisponibilidadeRegra({ colaboradorId: user.id, diaSemana, horaInicio, horaFim });
-        regrasAtuais = await MockAPI.getDisponibilidadeRegras(user.id);
-      } else {
-        const data = document.getElementById("mh-nova-data").value;
-        if (!data) { showToast("Escolha uma data.", "erro"); return; }
-        await MockAPI.addDisponibilidadeExcecao({ colaboradorId: user.id, data, horaInicio, horaFim, tipo: "disponivel" });
-        excecoesAtuais = await MockAPI.getDisponibilidadeExcecoes(user.id);
+      try {
+        if (modoRecorrente) {
+          const diaSemana = Number(document.getElementById("mh-nova-dia").value);
+          await MockAPI.addDisponibilidadeRegra({ colaboradorId: user.id, diaSemana, horaInicio, horaFim, slugFallback: cfg.slug });
+          regrasAtuais = await MockAPI.getDisponibilidadeRegras(user.id);
+        } else {
+          const data = document.getElementById("mh-nova-data").value;
+          if (!data) { showToast("Escolha uma data.", "erro"); return; }
+          await MockAPI.addDisponibilidadeExcecao({ colaboradorId: user.id, data, horaInicio, horaFim, tipo: "disponivel", slugFallback: cfg.slug });
+          excecoesAtuais = await MockAPI.getDisponibilidadeExcecoes(user.id);
+        }
+        renderCorpo();
+      } catch (err) {
+        showToast(err.message || "Não foi possível adicionar o horário.", "erro");
       }
-      renderCorpo();
     });
 
     body.querySelectorAll("[data-del-item]").forEach((btn) => {
