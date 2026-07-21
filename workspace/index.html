@@ -3878,8 +3878,8 @@ function mapEventoConvidado(row) {
 }
 function mapAgendamentoPublico(row) {
   return {
-    id: row.id, colaboradorId: row.colaborador_id, eventoId: row.evento_id,
-    nomeCliente: row.nome_cliente, telefoneCliente: row.telefone_cliente || "", emailCliente: row.email_cliente || "",
+    id: row.id, configId: row.config_id, eventoId: row.evento_id || null,
+    nomeCliente: row.nome_solicitante, telefoneCliente: row.telefone_cliente || "", emailCliente: row.email_solicitante || "",
     criadoEm: row.criado_em,
   };
 }
@@ -3888,7 +3888,7 @@ function mapAgendamentoPublico(row) {
 function mapAgendaPublicaConfig(row) {
   if (!row) return null;
   return {
-    colaboradorId: row.colaborador_id, ativo: !!row.ativo, slug: row.slug || null,
+    id: row.id, colaboradorId: row.colaborador_id, ativo: !!row.ativo, slug: row.slug || null,
     tituloPagina: row.titulo_pagina || "", duracaoSlotMin: row.duracao_slot_min ?? 60,
     antecedenciaMinimaHoras: row.antecedencia_minima_horas ?? 2, diasFuturos: row.dias_futuros ?? 30,
     intervaloMin: row.intervalo_min ?? 0,
@@ -3905,16 +3905,22 @@ function toAgendaPublicaConfigRow(p) {
   if (p.intervaloMin !== undefined) row.intervalo_min = p.intervaloMin;
   return row;
 }
+/* ---- disponibilidade_regra / disponibilidade_excecao / agendamento_publico não têm
+   colaborador_id — elas se ligam ao colaborador indiretamente via config_id ->
+   agenda_publica_config.colaborador_id. Por isso essas linhas não carregam
+   colaboradorId (o chamador já sabe de quem é, pelo contexto). */
 function mapDisponibilidadeRegra(row) {
   return {
-    id: row.id, colaboradorId: row.colaborador_id, diaSemana: row.dia_semana,
+    id: row.id, configId: row.config_id, diaSemana: row.dia_semana,
     horaInicio: row.hora_inicio?.slice(0, 5), horaFim: row.hora_fim?.slice(0, 5),
   };
 }
 function mapDisponibilidadeExcecao(row) {
   return {
-    id: row.id, colaboradorId: row.colaborador_id, data: row.data,
-    horaInicio: row.hora_inicio?.slice(0, 5), horaFim: row.hora_fim?.slice(0, 5), tipo: row.tipo,
+    id: row.id, configId: row.config_id, data: row.data,
+    horaInicio: row.hora_inicio ? row.hora_inicio.slice(0, 5) : null,
+    horaFim: row.hora_fim ? row.hora_fim.slice(0, 5) : null,
+    tipo: row.tipo,
   };
 }
 
@@ -4006,6 +4012,20 @@ let equipePermissoes = [
 function mensagemDeErroSupabase(error, mensagemPadrao) {
   if (error?.code === "42501") return "Você não tem permissão para fazer essa ação.";
   return mensagemPadrao;
+}
+
+/**
+ * disponibilidade_regra, disponibilidade_excecao e agendamento_publico não
+ * guardam colaborador_id — elas apontam pra agenda_publica_config (config_id),
+ * que por sua vez pertence a um colaborador. Esse helper resolve esse id
+ * intermediário antes de ler/gravar nessas tabelas.
+ */
+async function resolverAgendaPublicaConfigId(supabase, colaboradorId, { somenteAtiva = false } = {}) {
+  let query = supabase.from("agenda_publica_config").select("id").eq("colaborador_id", colaboradorId);
+  if (somenteAtiva) query = query.eq("ativo", true);
+  const { data, error } = await query.maybeSingle();
+  if (error) { console.error("resolverAgendaPublicaConfigId:", error); return null; }
+  return data?.id || null;
 }
 
 const MockAPI = {
@@ -4218,7 +4238,9 @@ const MockAPI = {
       await delay(80);
       return disponibilidadeRegras.filter((r) => r.colaboradorId === colaboradorId);
     }
-    const { data, error } = await supabase.from("disponibilidade_regra").select("*").eq("colaborador_id", colaboradorId).order("dia_semana").order("hora_inicio");
+    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId);
+    if (!configId) return [];
+    const { data, error } = await supabase.from("disponibilidade_regra").select("*").eq("config_id", configId).order("dia_semana").order("hora_inicio");
     if (error) { console.error("getDisponibilidadeRegras:", error); return []; }
     return data.map(mapDisponibilidadeRegra);
   },
@@ -4231,8 +4253,10 @@ const MockAPI = {
       disponibilidadeRegras = [...disponibilidadeRegras, nova];
       return nova;
     }
+    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId);
+    if (!configId) throw new Error("Salve as configurações da agenda pública antes de adicionar horários.");
     const { data, error } = await supabase.from("disponibilidade_regra")
-      .insert({ colaborador_id: colaboradorId, dia_semana: diaSemana, hora_inicio: horaInicio, hora_fim: horaFim })
+      .insert({ config_id: configId, dia_semana: diaSemana, hora_inicio: horaInicio, hora_fim: horaFim })
       .select().single();
     if (error) { console.error("addDisponibilidadeRegra:", error); throw new Error("Não foi possível adicionar o horário."); }
     return mapDisponibilidadeRegra(data);
@@ -4255,7 +4279,9 @@ const MockAPI = {
       await delay(80);
       return disponibilidadeExcecoes.filter((e) => e.colaboradorId === colaboradorId).sort((a, b) => a.data.localeCompare(b.data));
     }
-    const { data, error } = await supabase.from("disponibilidade_excecao").select("*").eq("colaborador_id", colaboradorId).order("data");
+    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId);
+    if (!configId) return [];
+    const { data, error } = await supabase.from("disponibilidade_excecao").select("*").eq("config_id", configId).order("data");
     if (error) { console.error("getDisponibilidadeExcecoes:", error); return []; }
     return data.map(mapDisponibilidadeExcecao);
   },
@@ -4268,8 +4294,10 @@ const MockAPI = {
       disponibilidadeExcecoes = [...disponibilidadeExcecoes, nova];
       return nova;
     }
+    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId);
+    if (!configId) throw new Error("Salve as configurações da agenda pública antes de adicionar exceções.");
     const { data: row, error } = await supabase.from("disponibilidade_excecao")
-      .insert({ colaborador_id: colaboradorId, data, hora_inicio: horaInicio, hora_fim: horaFim, tipo })
+      .insert({ config_id: configId, data, hora_inicio: horaInicio, hora_fim: horaFim, tipo })
       .select().single();
     if (error) { console.error("addDisponibilidadeExcecao:", error); throw new Error("Não foi possível adicionar a exceção."); }
     return mapDisponibilidadeExcecao(row);
@@ -4330,9 +4358,11 @@ const MockAPI = {
         excecoes: disponibilidadeExcecoes.filter((e) => e.colaboradorId === colaboradorId),
       };
     }
+    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId, { somenteAtiva: true });
+    if (!configId) return { regras: [], excecoes: [] };
     const [{ data: regras, error: e1 }, { data: excecoes, error: e2 }] = await Promise.all([
-      supabase.from("disponibilidade_regra").select("*").eq("colaborador_id", colaboradorId),
-      supabase.from("disponibilidade_excecao").select("*").eq("colaborador_id", colaboradorId),
+      supabase.from("disponibilidade_regra").select("*").eq("config_id", configId),
+      supabase.from("disponibilidade_excecao").select("*").eq("config_id", configId),
     ]);
     if (e1) console.error("getDisponibilidadePublica (regras):", e1);
     if (e2) console.error("getDisponibilidadePublica (exceções):", e2);
@@ -4368,7 +4398,9 @@ const MockAPI = {
       await delay(80);
       return agendamentosPublicos.filter((a) => a.colaboradorId === colaboradorId);
     }
-    const { data, error } = await supabase.from("agendamento_publico").select("*").eq("colaborador_id", colaboradorId);
+    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId);
+    if (!configId) return [];
+    const { data, error } = await supabase.from("agendamento_publico").select("*").eq("config_id", configId);
     if (error) { console.error("getAgendamentosPublicosDoColaborador:", error); return []; }
     return data.map(mapAgendamentoPublico);
   },
@@ -4406,8 +4438,9 @@ const MockAPI = {
     });
     if (errEvento) { console.error("criarAgendamentoPublico:", errEvento); throw new Error("Não foi possível confirmar o agendamento — talvez esse horário tenha acabado de ser preenchido. Atualize a página e tente outro."); }
 
+    const configId = await resolverAgendaPublicaConfigId(supabase, colaboradorId, { somenteAtiva: true });
     const { error: errAgendamento } = await supabase.from("agendamento_publico").insert({
-      colaborador_id: colaboradorId, evento_id: eventoId, nome_cliente: nomeCliente, telefone_cliente: telefoneCliente || null, email_cliente: emailCliente || null,
+      config_id: configId, evento_id: eventoId, nome_solicitante: nomeCliente, telefone_cliente: telefoneCliente || null, email_solicitante: emailCliente || null,
     });
     if (errAgendamento) console.error("criarAgendamentoPublico (registro do cliente):", errAgendamento);
 
