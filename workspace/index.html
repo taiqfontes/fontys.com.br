@@ -3668,9 +3668,12 @@ function toProdutoRow(p) {
   return row;
 }
 
-function mapTimelineItem(row) { return { id: row.id, texto: row.texto, tipo: row.tipo, data: row.data }; }
-function mapArquivoItem(row) { return { id: row.id, nome: row.nome }; }
-function mapContratoItem(row) { return { id: row.id, nome: row.nome, valor: Number(row.valor) || 0, status: row.status, inicio: row.inicio }; }
+/* ---- clientes_timeline: schema real só tem "descricao" (sem tipo separado,
+   que nunca era exibido na tela mesmo) — o texto do evento vira a descrição. */
+function mapTimelineItem(row) { return { id: row.id, texto: row.descricao, tipo: "nota", data: row.criado_em ? row.criado_em.slice(0, 10) : null }; }
+/* ---- clientes_arquivos / clientes_contratos: schema real usa "nome_arquivo". ---- */
+function mapArquivoItem(row) { return { id: row.id, nome: row.nome_arquivo }; }
+function mapContratoItem(row) { return { id: row.id, nome: row.nome_arquivo, valor: Number(row.valor) || 0, status: row.status, inicio: row.inicio }; }
 
 function mapCliente(row) {
   return {
@@ -3743,6 +3746,7 @@ function toBriefingRow(p) {
   if (p.onboarding !== undefined) row.onboarding = p.onboarding;
   if (p.diagnostico !== undefined) row.diagnostico = p.diagnostico;
   if (p.manualMarca !== undefined) row.manual_marca = p.manualMarca;
+  row.atualizado_em = new Date().toISOString();
   return row;
 }
 
@@ -3752,9 +3756,9 @@ const CLIENTE_SELECT = "*, clientes_timeline(*), clientes_arquivos(*), clientes_
 /* ---- Tarefas: mapeamento ---- */
 const TAREFA_SELECT = "*, tarefas_checklist(*), tarefas_comentarios(*), tarefas_anexos(*)";
 
-function mapChecklistItem(row) { return { id: row.id, texto: row.texto, feito: row.feito }; }
+function mapChecklistItem(row) { return { id: row.id, texto: row.texto, feito: row.concluido }; }
 function mapComentario(row) { return { id: row.id, autorId: row.autor_id, texto: row.texto, data: row.criado_em ? row.criado_em.slice(0, 10) : null }; }
-function mapAnexo(row) { return { id: row.id, nome: row.nome }; }
+function mapAnexo(row) { return { id: row.id, nome: row.nome_arquivo }; }
 function mapProjetoTarefa(row) { return { id: row.id, nome: row.nome, cor: row.cor || "#2e63a6", criadoEm: row.criado_em, criadoPor: row.criado_por }; }
 
 function mapTarefa(row) {
@@ -4533,10 +4537,10 @@ const MockAPI = {
     if (error) { console.error("createTarefa:", error); throw new Error("Não foi possível criar a tarefa."); }
 
     if (checklist?.length) {
-      await supabase.from("tarefas_checklist").insert(checklist.map((c) => ({ tarefa_id: data.id, texto: c.texto, feito: c.feito || false })));
+      await supabase.from("tarefas_checklist").insert(checklist.map((c) => ({ tarefa_id: data.id, texto: c.texto, concluido: c.feito || false })));
     }
     if (anexos?.length) {
-      await supabase.from("tarefas_anexos").insert(anexos.map((a) => ({ tarefa_id: data.id, nome: a.nome })));
+      await supabase.from("tarefas_anexos").insert(anexos.map((a) => ({ tarefa_id: data.id, nome_arquivo: a.nome })));
     }
     return { ...mapTarefa(data), checklist: checklist || [], anexos: anexos || [] };
   },
@@ -4557,14 +4561,14 @@ const MockAPI = {
     if (checklist !== undefined) {
       await supabase.from("tarefas_checklist").delete().eq("tarefa_id", id);
       if (checklist.length) {
-        const { error: ckError } = await supabase.from("tarefas_checklist").insert(checklist.map((c) => ({ tarefa_id: id, texto: c.texto, feito: c.feito || false })));
+        const { error: ckError } = await supabase.from("tarefas_checklist").insert(checklist.map((c) => ({ tarefa_id: id, texto: c.texto, concluido: c.feito || false })));
         if (ckError) console.error("updateTarefa (checklist):", ckError);
       }
     }
     if (anexos !== undefined) {
       await supabase.from("tarefas_anexos").delete().eq("tarefa_id", id);
       if (anexos.length) {
-        const { error: anError } = await supabase.from("tarefas_anexos").insert(anexos.map((a) => ({ tarefa_id: id, nome: a.nome })));
+        const { error: anError } = await supabase.from("tarefas_anexos").insert(anexos.map((a) => ({ tarefa_id: id, nome_arquivo: a.nome })));
         if (anError) console.error("updateTarefa (anexos):", anError);
       }
     }
@@ -4651,7 +4655,7 @@ const MockAPI = {
       clientes = clientes.map((c) => (c.id === clienteId ? { ...c, timeline: [evento, ...c.timeline] } : c));
       return clientes.find((c) => c.id === clienteId);
     }
-    const { error } = await supabase.from("clientes_timeline").insert({ cliente_id: clienteId, texto: evento.texto, tipo: evento.tipo, data: evento.data });
+    const { error } = await supabase.from("clientes_timeline").insert({ cliente_id: clienteId, descricao: evento.texto });
     if (error) { console.error("addTimelineEvento:", error); throw new Error("Não foi possível registrar o evento."); }
     return this.getClientes().then((all) => all.find((c) => c.id === clienteId));
   },
@@ -4663,7 +4667,7 @@ const MockAPI = {
       clientes = clientes.map((c) => (c.id === clienteId ? { ...c, arquivos: [...c.arquivos, arquivo] } : c));
       return clientes.find((c) => c.id === clienteId);
     }
-    const { error } = await supabase.from("clientes_arquivos").insert({ cliente_id: clienteId, nome: arquivo.nome });
+    const { error } = await supabase.from("clientes_arquivos").insert({ cliente_id: clienteId, nome_arquivo: arquivo.nome });
     if (error) { console.error("addArquivo:", error); throw new Error("Não foi possível anexar o arquivo."); }
     return this.getClientes().then((all) => all.find((c) => c.id === clienteId));
   },
@@ -4675,7 +4679,7 @@ const MockAPI = {
       clientes = clientes.map((c) => (c.id === clienteId ? { ...c, contratos: [...c.contratos, contrato] } : c));
       return clientes.find((c) => c.id === clienteId);
     }
-    const { error } = await supabase.from("clientes_contratos").insert({ cliente_id: clienteId, nome: contrato.nome, valor: contrato.valor, status: contrato.status, inicio: contrato.inicio });
+    const { error } = await supabase.from("clientes_contratos").insert({ cliente_id: clienteId, nome_arquivo: contrato.nome, valor: contrato.valor, status: contrato.status, inicio: contrato.inicio });
     if (error) { console.error("addContrato:", error); throw new Error("Não foi possível adicionar o contrato."); }
     return this.getClientes().then((all) => all.find((c) => c.id === clienteId));
   },
@@ -5292,7 +5296,7 @@ const MockAPI = {
     }
     const op = await this.getOrCreateOperacional(planoId, assessorId);
     const { error } = await supabase.from("assessoria_cronograma").insert({
-      operacional_id: op.id, data: item.data, titulo: item.titulo, descricao: item.descricao,
+      operacional_id: op.id, data: item.data, descricao: item.titulo ? `${item.titulo}: ${item.descricao || ""}` : item.descricao,
     });
     if (error) { console.error("addCronogramaItem:", error); throw new Error("Não foi possível adicionar ao cronograma."); }
   },
